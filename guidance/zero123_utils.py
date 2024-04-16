@@ -29,6 +29,7 @@ class Zero123(nn.Module):
             model_key,
             torch_dtype=self.dtype,
             trust_remote_code=True,
+            low_cpu_mem_usage=False,
         ).to(self.device)
 
         # stable-zero123 has a different camera embedding

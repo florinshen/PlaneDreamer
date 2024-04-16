@@ -16,6 +16,43 @@ from gs_renderer import Renderer, MiniCam
 from grid_put import mipmap_linear_grid_put_2d
 from mesh import Mesh, safe_normalize
 
+import imageio 
+from PIL import Image
+from os import path as osp
+
+def _resize(image_array, size=(512, 512)):
+    image = Image.fromarray(image_array)
+    resized_image = image.resize(size)
+    resized_image_array = np.array(resized_image)
+    return resized_image_array 
+
+def save_image(fn, x : np.ndarray):
+    try:
+        if os.path.splitext(fn)[1] == ".png":
+            imageio.imwrite(fn, np.clip(np.rint(x * 255.0), 0, 255).astype(np.uint8), compress_level=3) # Low compression for faster saving
+        else:
+            imageio.imwrite(fn, np.clip(np.rint(x * 255.0), 0, 255).astype(np.uint8))
+    except:
+        print("WARNING: FAILED to save image %s" % fn)
+
+def save_mp4(dir, fps):
+    imgpath = dir
+    frames = []
+    frames_depth = []
+    frames_mask = []
+    for name in sorted(os.listdir(imgpath)):
+        img = osp.join(imgpath, name)
+        img = imageio.v2.imread(img)
+        resized_img = _resize(img, (512, 512))
+        if 'depth' in name:
+            frames_depth.append(resized_img)
+        elif 'mask' in name:
+            frames_mask.append(resized_img)
+        else:
+            frames.append(resized_img)
+    imageio.mimsave(os.path.join(dir, 'eval.mp4'), frames,fps=fps)
+
+
 class GUI:
     def __init__(self, opt):
         self.opt = opt  # shared with the trainer's opt to support in-place modification of rendering parameters.
@@ -885,6 +922,21 @@ class GUI:
             self.test_step()
             dpg.render_dearpygui_frame()
     
+    def save_video(self):
+        azimuths = np.linspace(0, 360, 60)
+        image_dir = osp.join(opt.outdir, 'eval')
+        os.makedirs(image_dir, exist_ok=True)
+        with torch.no_grad():
+            for idx, hor in enumerate(azimuths):
+                pose = orbit_camera(self.opt.elevation, hor, self.opt.radius)
+                cur_cam = MiniCam(pose, 512, 512, self.cam.fovy, self.cam.fovx, self.cam.near, self.cam.far)
+
+                # bg_color = torch.tensor([1, 1, 1] if np.random.rand() > self.opt.invert_bg_prob else [0, 0, 0], dtype=torch.float32, device="cuda")
+                out = self.renderer.render(cur_cam, bg_color=None)
+                image = out["image"]
+                save_image(osp.join(image_dir, "render_{:06d}.png".format(idx)), image.permute(1, 2, 0).detach().cpu().numpy())
+            save_mp4(image_dir, 15)
+
     # no gui mode
     def train(self, iters=500):
         if iters > 0:
@@ -893,9 +945,10 @@ class GUI:
                 self.train_step()
             # do a last prune
             self.renderer.gaussians.prune(min_opacity=0.01, extent=1, max_screen_size=1)
+        self.save_video()
         # save
         self.save_model(mode='model')
-        self.save_model(mode='geo+tex')
+        # self.save_model(mode='geo+tex')
         
 
 if __name__ == "__main__":
