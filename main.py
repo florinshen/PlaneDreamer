@@ -40,6 +40,7 @@ def save_mp4(dir, fps):
     frames = []
     frames_depth = []
     frames_mask = []
+    frames_normal = []
     for name in sorted(os.listdir(imgpath)):
         img = osp.join(imgpath, name)
         img = imageio.v2.imread(img)
@@ -48,9 +49,12 @@ def save_mp4(dir, fps):
             frames_depth.append(resized_img)
         elif 'mask' in name:
             frames_mask.append(resized_img)
+        elif 'normal' in name:
+            frames_normal.append(resized_img)
         else:
             frames.append(resized_img)
-    imageio.mimsave(os.path.join(dir, 'eval.mp4'), frames,fps=fps)
+    imageio.mimsave(os.path.join(dir, 'eval_rgb.mp4'), frames,fps=fps)
+    imageio.mimsave(os.path.join(dir, 'eval_normal.mp4'), frames_normal,fps=fps)
 
 
 class GUI:
@@ -244,6 +248,32 @@ class GUI:
                 mask = out["alpha"].unsqueeze(0) # [1, 1, H, W] in [0, 1]
                 loss = loss + 1000 * (step_ratio if self.opt.warmup_rgb_loss else 1) * F.mse_loss(mask, self.input_mask_torch)
 
+                # -------- special loss in 2dgs  --------
+                rend_dist = out["rend_dist"]
+                lambda_dist = self.opt.lambda_dist if step_ratio > 0.3 else 0
+                # lambda_dist = step_ratio * self.opt.lambda_dist
+                dist_loss = lambda_dist * (rend_dist).mean()
+
+                rend_normal  = out['rend_normal']
+                surf_normal = out['surf_normal']
+                normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
+
+                lambda_normal = self.opt.lambda_normal if step_ratio > 0.5 else 0 
+                # lambda_normal = step_ratio * self.opt.lambda_normal
+                normal_loss = lambda_normal * (normal_error).mean()
+
+                # normal smooth loss
+                # rend_normal 
+                normal = rend_normal[None, :].permute(0, 2, 3, 1)
+
+
+                lambda_normal_smooth = self.opt.lambda_normal_smooth if step_ratio > 0.75 else 0
+
+                normal_smooth_loss = lambda_normal_smooth * ((normal[:, 1:, :, :] - normal[:, :-1, :, :]).square().mean()
+                + (normal[:, :, 1:, :] - normal[:, :, :-1, :]).square().mean())
+
+                loss = loss + dist_loss + normal_loss + normal_smooth_loss
+
             ### novel view (manual batch)
             render_resolution = 128 if step_ratio < 0.3 else (256 if step_ratio < 0.6 else 512)
             images = []
@@ -318,7 +348,7 @@ class GUI:
                 self.renderer.gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
                 if self.step % self.opt.densification_interval == 0:
-                    self.renderer.gaussians.densify_and_prune(self.opt.densify_grad_threshold, min_opacity=0.01, extent=4, max_screen_size=1)
+                    self.renderer.gaussians.densify_and_prune(self.opt.densify_grad_threshold, min_opacity=0.05, extent=4, max_screen_size=1)
                 
                 if self.step % self.opt.opacity_reset_interval == 0:
                     self.renderer.gaussians.reset_opacity()
@@ -934,7 +964,9 @@ class GUI:
                 # bg_color = torch.tensor([1, 1, 1] if np.random.rand() > self.opt.invert_bg_prob else [0, 0, 0], dtype=torch.float32, device="cuda")
                 out = self.renderer.render(cur_cam, bg_color=None)
                 image = out["image"]
+                normal_map = out["rend_normal"] * 0.5 + 0.5
                 save_image(osp.join(image_dir, "render_{:06d}.png".format(idx)), image.permute(1, 2, 0).detach().cpu().numpy())
+                save_image(osp.join(image_dir, "normal_{:06d}.png".format(idx)), normal_map.permute(1, 2, 0).detach().cpu().numpy())
             save_mp4(image_dir, 15)
 
     # no gui mode
@@ -944,7 +976,7 @@ class GUI:
             for i in tqdm.trange(iters):
                 self.train_step()
             # do a last prune
-            self.renderer.gaussians.prune(min_opacity=0.01, extent=1, max_screen_size=1)
+            self.renderer.gaussians.prune(min_opacity=0.05, extent=1, max_screen_size=1)
         self.save_video()
         # save
         self.save_model(mode='model')
