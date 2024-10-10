@@ -34,4 +34,4 @@ pymeshlab == 2023.12
 rembg[gpu,cli] == 2.0.49
 
 # gradio demo
-gradio == 4.8.0
+gradio == 5.0.0
